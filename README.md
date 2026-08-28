@@ -120,6 +120,19 @@ changes the shape of the response — the parser is deliberately tolerant (it
 accepts several key spellings and both 0–100 and 0–1 scales), but this shows you
 exactly what came back.
 
+## Troubleshooting
+
+If the widget misbehaves, check `claude-usage-bar.log` next to the script. It
+records any unhandled exception. Under `pythonw.exe` there is no console, so
+this file is the only place errors surface; an empty or missing file means
+nothing has gone wrong.
+
+**Staying above the taskbar.** Clicking the taskbar raises it above other
+topmost windows, and it does not drop back on its own. The widget detects this
+and re-enters the topmost band. It only does so when the taskbar itself is the
+thing covering it, so it will not punch through the Start menu or other
+flyouts.
+
 ## Notes and limits
 
 - **Windows 11 removed taskbar toolbars** (deskbands), so this is a borderless

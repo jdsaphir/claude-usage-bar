@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import traceback
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -32,6 +33,39 @@ STARTUP_DIR = os.path.join(
     "Microsoft", "Windows", "Start Menu", "Programs", "Startup",
 )
 STARTUP_FILE = os.path.join(STARTUP_DIR, "ClaudeUsageBar.vbs")
+LOG_PATH = os.path.join(APP_DIR, "claude-usage-bar.log")
+MAX_LOG_BYTES = 256 * 1024
+
+
+def _open_log():
+    try:
+        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > MAX_LOG_BYTES:
+            os.remove(LOG_PATH)
+        return open(LOG_PATH, "a", encoding="utf-8", buffering=1)
+    except OSError:
+        return open(os.devnull, "w", encoding="utf-8")
+
+
+# Under pythonw.exe there is no console, so sys.stderr is None. Anything that
+# writes to it - including tkinter's own exception reporter - then raises
+# inside the error handler and can take the whole process down silently.
+if sys.stderr is None or sys.stdout is None:
+    _fallback_log = _open_log()
+    if sys.stdout is None:
+        sys.stdout = _fallback_log
+    if sys.stderr is None:
+        sys.stderr = _fallback_log
+
+
+def log_error(context, exc_info=None):
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with open(LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write("\n[%s] %s\n" % (stamp, context))
+            traceback.print_exception(*(exc_info or sys.exc_info()), file=fh)
+    except (OSError, TypeError):
+        pass
+
 
 DEFAULTS = {
     "poll_seconds": 60,
@@ -88,15 +122,43 @@ GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_NOACTIVATE = 0x08000000
 HWND_TOPMOST = -1
+HWND_NOTOPMOST = -2
 SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
 SWP_NOACTIVATE = 0x0010
+SWP_FLAGS = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
 MONITOR_DEFAULTTONEAREST = 2
+GA_ROOT = 2
 
 
 class MONITORINFO(ctypes.Structure):
     _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", wt.RECT),
                 ("rcWork", wt.RECT), ("dwFlags", wt.DWORD)]
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", wt.LONG), ("y", wt.LONG)]
+
+
+# These prototypes are load-bearing, not decoration. Without argtypes, ctypes
+# passes the special HWND_TOPMOST (-1) / HWND_NOTOPMOST (-2) values as 32-bit
+# ints, so on 64-bit Windows they arrive as 0x00000000FFFFFFFF instead of a
+# sign-extended pointer and SetWindowPos fails with ERROR_INVALID_WINDOW_HANDLE
+# - silently, since nothing checks the return value. Declaring HWND params
+# makes ctypes sign-extend them correctly.
+user32.SetWindowPos.argtypes = [wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int,
+                                ctypes.c_int, ctypes.c_int, wt.UINT]
+user32.SetWindowPos.restype = wt.BOOL
+user32.WindowFromPoint.argtypes = [POINT]
+user32.WindowFromPoint.restype = wt.HWND
+user32.GetAncestor.argtypes = [wt.HWND, wt.UINT]
+user32.GetAncestor.restype = wt.HWND
+user32.GetForegroundWindow.restype = wt.HWND
+user32.FindWindowW.restype = wt.HWND
+user32.GetParent.argtypes = [wt.HWND]
+user32.GetParent.restype = wt.HWND
+user32.MonitorFromWindow.argtypes = [wt.HWND, wt.DWORD]
+user32.MonitorFromWindow.restype = wt.HANDLE
 
 
 def set_dpi_aware():
@@ -185,6 +247,11 @@ def rounded_points(x0, y0, x1, y1, r, steps=6):
 
 
 class UsageBar:
+    # How often to re-check position and z-order. Short enough that being
+    # covered by the taskbar is not perceptible; the checks are a few cheap
+    # Win32 calls.
+    TICK_MS = 350
+
     def __init__(self):
         set_dpi_aware()
         self.cfg = load_config()
@@ -204,14 +271,40 @@ class UsageBar:
         self.dragging = None
         self.tip = None
 
+        self.alive = True
+
         self._build_window()
         self._build_menu()
         self._start_worker()
 
+        self.root.report_callback_exception = self._on_callback_error
         self.root.after(60, self._apply_styles)
-        self.root.after(200, self._pump)
-        self.root.after(33, self._animate)
-        self.root.after(1000, self._housekeeping)
+        self._schedule(self._pump, 200)
+        self._schedule(self._animate, 33)
+        self._schedule(self._housekeeping, self.TICK_MS)
+
+    def _on_callback_error(self, exc, val, tb):
+        log_error("unhandled callback exception", (exc, val, tb))
+
+    def _schedule(self, fn, delay):
+        """Run fn every delay ms, surviving exceptions.
+
+        Self-rescheduling callbacks stop forever if they ever raise before
+        their own after() call, which would silently freeze the widget.
+        """
+        def run():
+            try:
+                fn()
+            except Exception:
+                log_error("in %s" % fn.__name__)
+            finally:
+                if self.alive:
+                    try:
+                        self.root.after(delay, run)
+                    except tk.TclError:
+                        pass
+
+        self.root.after(delay, run)
 
     # -- geometry ----------------------------------------------------------
 
@@ -315,6 +408,7 @@ class UsageBar:
                 except cu.UsageError as exc:
                     self.q.put(("err", exc))
                 except Exception as exc:  # never let the poller die
+                    log_error("in usage poller")
                     self.q.put(("err", cu.UsageError(str(exc)[:40])))
             self.wake.wait(max(10, int(self.cfg.get("poll_seconds", 60))))
             self.wake.clear()
@@ -339,7 +433,6 @@ class UsageBar:
         if changed:
             # Repaint even when no bar is moving, so glyph/error state updates.
             self._draw()
-        self.root.after(200, self._pump)
 
     def _demo_data(self):
         phase = time.time() / 9.0
@@ -371,7 +464,6 @@ class UsageBar:
                 self.shown[key] = tgt
         if moved or self.cfg.get("demo"):
             self._draw()
-        self.root.after(33, self._animate)
 
     # -- painting ----------------------------------------------------------
 
@@ -586,10 +678,44 @@ class UsageBar:
             subprocess.Popen(["notepad.exe", CONFIG_PATH])
 
     def _quit(self):
+        self.alive = False  # stop the scheduled loops rescheduling onto a dead root
         self._hide_tip()
         self.root.destroy()
 
     # -- upkeep ------------------------------------------------------------
+
+    def _covered_by_taskbar(self):
+        """True if the taskbar specifically is painted over the widget.
+
+        Clicking the taskbar raises Shell_TrayWnd above us, and it never drops
+        back on its own. Only the taskbar is worth fighting: if a Start menu or
+        another flyout is on top, punching through it would be worse than being
+        briefly hidden.
+        """
+        if not getattr(self, "hwnd", None) or not getattr(self, "pos", None):
+            return False
+        x = self.pos[0] + self.geom["w"] // 2
+        y = self.pos[1] + self.geom["h"] // 2
+        top = user32.WindowFromPoint(POINT(x, y))
+        if not top:
+            return False
+        root = user32.GetAncestor(top, GA_ROOT)
+        if root == self.hwnd:
+            return False
+        return window_class(root) == "Shell_TrayWnd"
+
+    def _force_topmost(self):
+        """Re-enter the topmost band.
+
+        A plain SetWindowPos(HWND_TOPMOST) on a window that is *already*
+        topmost is a no-op, so it cannot climb back over the taskbar. Dropping
+        to NOTOPMOST first makes it a real z-order change.
+        """
+        try:
+            user32.SetWindowPos(self.hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_FLAGS)
+            user32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS)
+        except Exception:
+            pass
 
     def _housekeeping(self):
         """Keep the widget pinned above the taskbar and out of fullscreen apps."""
@@ -600,13 +726,8 @@ class UsageBar:
         else:
             if not self.root.winfo_viewable():
                 self.root.deiconify()
-            if getattr(self, "hwnd", None):
-                try:
-                    user32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
-                except Exception:
-                    pass
-        self.root.after(1000, self._housekeeping)
+            if getattr(self, "hwnd", None) and self._covered_by_taskbar():
+                self._force_topmost()
 
     def run(self):
         self.root.mainloop()

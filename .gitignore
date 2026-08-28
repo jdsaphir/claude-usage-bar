@@ -3,3 +3,6 @@ __pycache__/
 
 # Per-machine settings, regenerated on first change
 config.json
+
+# Runtime error log
+claude-usage-bar.log
