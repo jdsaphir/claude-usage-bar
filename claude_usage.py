@@ -204,9 +204,8 @@ def _as_percent(value):
         num = float(value)
     except (TypeError, ValueError):
         return None
-    # Some payloads express utilisation as a 0-1 fraction, others as 0-100.
-    if isinstance(value, float) and 0.0 < num <= 1.0:
-        num *= 100.0
+    # The endpoint reports utilisation on a 0-100 scale, as a float (e.g. 1.0
+    # for 1%). Don't guess at 0-1 fractions: that turned 1% into 100%.
     return max(0.0, min(100.0, num))
 
 
