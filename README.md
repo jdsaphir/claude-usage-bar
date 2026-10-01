@@ -61,7 +61,7 @@ To start it automatically at login, right-click the widget and choose
 | Hover | Tooltip with exact percentages and when each window resets |
 | Left-drag | Slide it sideways; the position is remembered |
 | Double-click | Refresh immediately |
-| Right-click | Refresh, autostart toggle, demo mode, config file, quit |
+| Right-click | Refresh, autostart toggle, reset-time toggle, demo mode, config file, quit |
 
 Colours: session is Claude orange, weekly is violet. Both turn **amber** at 75%
 and **red** at 90%, so a glance is enough.
@@ -77,6 +77,7 @@ and **red** at 90%, so a glance is enough.
 | `y_nudge` | `0` | Vertical fine-tuning |
 | `scale` | `1.0` | Size multiplier, on top of DPI scaling |
 | `show_labels` | `true` | Show the `5H` / `7D` labels |
+| `show_reset` | `false` | Show the time left before each limit resets next to its percentage |
 | `warn_at` / `critical_at` | `75` / `90` | Amber and red thresholds |
 | `hide_on_fullscreen` | `true` | Hide when a fullscreen app covers that monitor |
 | `demo` | `false` | Animate fake values, for checking the look |

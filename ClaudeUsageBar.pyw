@@ -73,6 +73,7 @@ DEFAULTS = {
     "y_nudge": 0,
     "scale": 1.0,
     "show_labels": True,
+    "show_reset": False,
     "warn_at": 75,
     "critical_at": 90,
     "hide_on_fullscreen": True,
@@ -321,12 +322,15 @@ class UsageBar:
         def p(v):
             return int(round(v * s))
 
+        # Room for "6d 12h" after the percentage when reset times are shown.
+        extra = p(42) if self.cfg.get("show_reset") else 0
         g = {
-            "w": p(214), "h": p(36), "pad": p(9),
+            "w": p(214) + extra, "h": p(36), "pad": p(9),
             "glyph_cx": p(18), "glyph_r": p(8.5),
             "label_x": p(32),
             "bar_x0": p(52), "bar_x1": p(168), "bar_h": max(4, p(7)),
             "pct_x": p(205),
+            "reset_x": p(205) + extra,
             "row_cy": (p(12.5), p(23.5)),
             "radius": p(9),
             "f_label": max(6, int(round(7 * s))),
@@ -515,6 +519,11 @@ class UsageBar:
                 c.create_text(g["pct_x"], cy, text="%d%%" % round(shown), anchor="e",
                               fill=TEXT_FG if shown < self.cfg["critical_at"] else RED,
                               font=("Segoe UI", g["f_pct"], "bold"))
+                resets = self.data.get(key, {}).get("resets_at")
+                if self.cfg.get("show_reset") and resets is not None:
+                    c.create_text(g["reset_x"], cy, text=cu.humanise_reset(resets),
+                                  anchor="e", fill=TEXT_DIM,
+                                  font=("Segoe UI", g["f_label"] + 1))
             else:
                 c.create_text(g["pct_x"], cy, text="--", anchor="e", fill=TEXT_DIM,
                               font=("Segoe UI", g["f_pct"], "bold"))
@@ -629,6 +638,9 @@ class UsageBar:
             label=("%s Start with Windows" % ("[x]" if self._autostart_on() else "[  ]")),
             command=self._toggle_autostart)
         self.menu.add_command(
+            label=("%s Show time to reset" % ("[x]" if self.cfg.get("show_reset") else "[  ]")),
+            command=self._toggle_show_reset)
+        self.menu.add_command(
             label=("%s Demo mode" % ("[x]" if self.cfg.get("demo") else "[  ]")),
             command=self._toggle_demo)
         self.menu.add_command(label="Open config file", command=self._open_config)
@@ -663,6 +675,16 @@ class UsageBar:
                 fh.write(vbs)
         except OSError:
             pass
+
+    def _toggle_show_reset(self):
+        self.cfg["show_reset"] = not self.cfg.get("show_reset")
+        save_config(self.cfg)
+        # The widget changes width, so rebuild the layout and resize in place.
+        self.geom = self._layout()
+        self.canvas.config(width=self.geom["w"], height=self.geom["h"])
+        self.pos = None
+        self._reposition()
+        self._draw()
 
     def _toggle_demo(self):
         self.cfg["demo"] = not self.cfg.get("demo")
@@ -720,6 +742,11 @@ class UsageBar:
     def _housekeeping(self):
         """Keep the widget pinned above the taskbar and out of fullscreen apps."""
         self._reposition()
+        # Keep the reset countdown ticking between polls (it has minute resolution).
+        minute = int(time.time() // 60)
+        if self.cfg.get("show_reset") and minute != getattr(self, "drawn_minute", None):
+            self.drawn_minute = minute
+            self._draw()
         if (self.cfg.get("hide_on_fullscreen")
                 and foreground_is_fullscreen(getattr(self, "hwnd", None))):
             self.root.withdraw()
